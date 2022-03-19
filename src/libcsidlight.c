@@ -1,6 +1,6 @@
-// Based of cSID light - an attempt at a usable simple API
+// Based on cSID light - an attempt at a usable simple API
 
-// cSID by Hermit (Mihaly Horvath), (Year 2017) http://hermit.sidrip.com
+// cSID-light-1.1 by Hermit (Mihaly Horvath), (Year 2022)
 // (based on jsSID, this version has much lower CPU-usage, as mainloop runs at samplerate)
 // License: WTF - Do what the fuck you want with this code, but please mention me as its original author.
 
@@ -8,18 +8,17 @@
 #include <stdio.h>
 #include <math.h>
 
-#include <libcsid.h>
+#include "libcsid.h"
 
 typedef unsigned char byte;
 typedef unsigned char Uint8;
 
 //global constants and variables
+#define NEW_COMBINED_WAVEFORMS 1 //to calculate new or original 1.0 combined waveforms
 #define C64_PAL_CPUCLK 985248.0
-#define SID_CHANNEL_AMOUNT 3 
+#define SID_CHANNEL_AMOUNT 3
 #define MAX_FILENAME_LEN 512
 #define MAX_DATA_LEN 65536
-// #define MAX_PLAYLIST_LEN 1000000
-// #define MAX_PLAYLIST_ROWLEN 600
 #define PAL_FRAMERATE 50.06 //50.0443427 //50.1245419 //(C64_PAL_CPUCLK/63/312.5), selected carefully otherwise some ADSR-sensitive tunes may suffer more:
 #define DEFAULT_SAMPLERATE 44100.0         //(Soldier of Fortune, 2nd Reality, Alliance, X-tra energy, Jackal, Sanxion, Ultravox, Hard Track, Swing, Myth, LN3, etc.)
 #define CLOCK_RATIO_DEFAULT C64_PAL_CPUCLK/DEFAULT_SAMPLERATE  //(50.0567520: lowest framerate where Sanxion is fine, and highest where Myth is almost fine)
@@ -29,19 +28,19 @@ typedef unsigned char Uint8;
 #define FILTER_DARKNESS_6581 22.0 //the bigger the value, the darker the filter control is (that is, cutoff frequency increases less with the same cutoff-value)
 #define FILTER_DISTORTION_6581 0.0016 //the bigger the value the more of resistance-modulation (filter distortion) is applied for 6581 cutoff-control
 
-int OUTPUT_SCALEDOWN = SID_CHANNEL_AMOUNT * 16 + 26; 
-//raw output divided by this after multiplied by main volume, this also compensates for filter-resonance emphasis to avoid distotion
+int OUTPUT_SCALEDOWN = SID_CHANNEL_AMOUNT * 16 + 26;
+//raw output divided by this after multiplied by main volume, this also compensates for filter-resonance emphasis to avoid distortion
 
-enum { GATE_BITMASK=0x01, SYNC_BITMASK=0x02, RING_BITMASK=0x04, TEST_BITMASK=0x08, 
-       TRI_BITMASK=0x10, SAW_BITMASK=0x20, PULSE_BITMASK=0x40, NOISE_BITMASK=0x80, 
-       HOLDZERO_BITMASK=0x10, DECAYSUSTAIN_BITMASK=0x40, ATTACK_BITMASK=0x80, 
+enum { GATE_BITMASK=0x01, SYNC_BITMASK=0x02, RING_BITMASK=0x04, TEST_BITMASK=0x08,
+       TRI_BITMASK=0x10, SAW_BITMASK=0x20, PULSE_BITMASK=0x40, NOISE_BITMASK=0x80,
+       HOLDZERO_BITMASK=0x10, DECAYSUSTAIN_BITMASK=0x40, ATTACK_BITMASK=0x80,
        LOWPASS_BITMASK=0x10, BANDPASS_BITMASK=0x20, HIGHPASS_BITMASK=0x40, OFF3_BITMASK=0x80 };
 
 float clock_ratio=CLOCK_RATIO_DEFAULT;
 
 //SID-emulation variables:
 const byte FILTSW[9] = {1,2,4,1,2,4,1,2,4};
-byte ADSRstate[9], expcnt[9], prevSR[9], sourceMSBrise[9];  
+byte ADSRstate[9], expcnt[9], prevSR[9], sourceMSBrise[9];
 short int envcnt[9];
 unsigned int prevwfout[9], prevwavdata[9], sourceMSB[3], noise_LFSR[9];
 int phaseaccu[9], prevaccu[9], prevlowpass[3], prevbandpass[3];;
@@ -49,23 +48,22 @@ float ratecnt[9], cutoff_ratio_8580, cutoff_steepness_6581, cap_6581_reciprocal;
 //player-related variables:
 int SIDamount=1, SID_model[3]={8580,8580,8580}, requested_SID_model=-1, sampleratio;
 byte filedata[MAX_DATA_LEN], memory[MAX_DATA_LEN], timermode[0x20], SIDtitle[0x20], SIDauthor[0x20], SIDinfo[0x20];
-// char playlist[MAX_PLAYLIST_LEN]="", filename[MAX_FILENAME_LEN]="";
 int subtune=0, tunelength=-1, default_tunelength=300, minutes=-1, seconds=-1;
-unsigned int initaddr, playaddr, playaddf, SID_address[3]={0xD400,0,0}; 
-int samplerate = DEFAULT_SAMPLERATE; 
-float framecnt=0, frame_sampleperiod = DEFAULT_SAMPLERATE/PAL_FRAMERATE; 
+unsigned int initaddr, playaddr, playaddf, SID_address[3]={0xD400,0,0};
+int samplerate = DEFAULT_SAMPLERATE;
+float framecnt=0, frame_sampleperiod = DEFAULT_SAMPLERATE/PAL_FRAMERATE;
 //CPU (and CIA/VIC-IRQ) emulation constants and variables - avoiding internal/automatic variables to retain speed
 const byte flagsw[]={0x01,0x21,0x04,0x24,0x00,0x40,0x08,0x28}, branchflag[]={0x80,0x40,0x01,0x02};
 unsigned int PC=0, pPC=0, addr=0, storadd=0;
-short int A=0, T=0, SP=0xFF; 
+short int A=0, T=0, SP=0xFF;
 byte X=0, Y=0, IR=0, ST=0x00;  //STATUS-flags: N V - B D I Z C
 float CPUtime=0.0;
 char cycles=0, finished=0, dynCIA=0;
 
 //function prototypes
 void cSID_init(int samplerate);
-int SID(char num, unsigned int baseaddr); void initSID();
-void initCPU (unsigned int mempos);  byte CPU (); 
+int runSID(char num, unsigned int baseaddr); void initSID();
+void initCPU (unsigned int mempos);  byte CPU ();
 void init (byte subtune);  void play(void* userdata, Uint8 *stream, int len );
 unsigned int combinedWF(char num, char channel, unsigned int* wfarray, int index, char differ6581, byte freq);
 void createCombinedWF(unsigned int* wfarray, float bitmul, float bitstrength, float treshold);
@@ -76,107 +74,10 @@ char isExt(char *filename, char* ext);
 //----------------------------- MAIN thread ----------------------------
 
 
-// int main (int argc, char *argv[])
-// {
-//  char playlistmode=0; int playlistcnt=0, startrow=0; 
-//  long int playlistlen=0, playlistpos=0;
-//  int readata, strend, subtune_amount, preferred_SID_model[3]={8580.0,8580.0,8580.0}; 
-//  unsigned int i, datalen, offs, loadaddr;
-//  FILE *InputFile=NULL, *PlaylistFile=NULL;
-//  usleep(100000); //wait a bit to avoid keypress leftover (btw this might not happen in Linux)
-//  //open and process the file
-//  if (argc<2) { 
-//   printf("\ncSID-light by Hermit (Mihaly Horvath) (Year 2017). Usage: \n\n csidl <sid_file> [ subtune_number [SID_modelnumber [seconds]] ]"
-//   "\n\n Or playlist mode (filelist inputfile with not .sid extension): "
-//   "\n\n csidl <listfile> [ start_row [forced_SID_modelnumber [default_tunelength]] ]"
-//   "\n\n (Give '-' where you don't want to specify values, default length: 300 sec.)\n\n"); 
-//   return 1; 
-//  }
-//  if ( isExt(argv[1],".sid") || isExt(argv[1],".SID") ) {
-//   playlistmode=0; //single tune mode
-//   if (argc>=3) sscanf(argv[2],"%d",&subtune);  else subtune=0;
-//   if (argc>=4) sscanf(argv[3],"%d",&requested_SID_model);
-//   if (argc>=5) sscanf(argv[4],"%d",&tunelength);
-//   strcpy(filename,argv[1]);
-//  }
-//  else { //playlist mode
-//   playlistmode=1; playlistlen=playlistpos=0; 
-//   if (argc>=3) sscanf(argv[2],"%d",&startrow);
-//   if (argc>=4) sscanf(argv[3],"%d",&requested_SID_model);
-//   if (argc>=5) sscanf(argv[4],"%d",&default_tunelength);
-//   PlaylistFile = fopen(argv[1],"rb"); 
-//   if (PlaylistFile==NULL) {printf("Playlist-file not found.\n");return 1;}
-//   do { readata=fgetc(PlaylistFile); playlist[playlistlen++]=readata; } while (readata!=EOF && playlistlen<MAX_PLAYLIST_LEN); fclose(PlaylistFile);
-//  }
-//  printf("\n"); 
-//  samplerate = DEFAULT_SAMPLERATE; sampleratio = round(C64_PAL_CPUCLK/samplerate);
-//  if ( SDL_Init(SDL_INIT_AUDIO) < 0 ) {fprintf(stderr, "Couldn't initialize SDL: %s\n",SDL_GetError()); return(1); }
-//  SDL_AudioSpec soundspec; soundspec.freq=samplerate; soundspec.channels=1; soundspec.format=AUDIO_S16; soundspec.samples=16384; soundspec.userdata=NULL; soundspec.callback=play;
-//  if ( SDL_OpenAudio(&soundspec, NULL) < 0 ) { fprintf(stderr, "Couldn't open audio: %s\n", SDL_GetError()); return(2); }
-
-// openSID: //I know I know, goto is harmful to you! But my code is ugly anyway. :)
-//  if (playlistmode) {
-//   if (++playlistcnt>=startrow) { subtune=1;
-//    if (!sscanf(&playlist[playlistpos],"%s",&filename[0]) || strlen(filename)<4)
-//    { printf("\nReached end of playlist.\n\n"); SDL_PauseAudio(1);SDL_CloseAudio(); return 0; } 
-//    printf("\nTune %d: ",playlistcnt); playlistpos+=strlen(filename); 
-//    if (sscanf(&playlist[playlistpos],"%d:%d:%d",&minutes,&seconds,&subtune)>=2) tunelength=60*minutes+seconds; 
-//    else if (sscanf(&playlist[playlistpos],"%d",&seconds)) { minutes=0; tunelength=seconds; }
-//    else tunelength=default_tunelength;
-//   }
-//   for(i=0; i<MAX_PLAYLIST_ROWLEN; i++) 
-//    if(playlist[playlistpos+i]=='\n' || playlistpos+i==playlistlen-2) {playlistpos+=i+1; break;}
-//   if(playlistcnt<startrow) goto openSID;
-//  }
-//  InputFile = fopen(filename,"rb"); if (InputFile==NULL) 
-//  { printf("SID file %s not found.\n",filename); if(playlistmode) goto openSID; else return(1); }
-//  datalen=0; do { readata=fgetc(InputFile); filedata[datalen++]=readata; } while (readata!=EOF && datalen<MAX_DATA_LEN); 
-//  subtune--; if (subtune<0 || subtune>63) subtune=0;
-//  printf("%d bytes read (%s subtune %d)",--datalen,filename,subtune+1); fclose(InputFile);
-//  offs=filedata[7]; loadaddr=filedata[8]+filedata[9]? filedata[8]*256+filedata[9] : filedata[offs]+filedata[offs+1]*256; 
-//  printf("\nOffset: $%4.4X, Loadaddress: $%4.4X, Size: $%4.4X", offs, loadaddr, datalen-offs);
-//  if(tunelength!=-1) printf(", Playtime: %d seconds (%2.2d:%2.2d)", tunelength, tunelength/60, tunelength%60); printf("\nTimermodes: ");
-//  for (i=0; i<32; i++) { timermode[31-i] = (filedata[0x12+(i>>3)] & (byte)pow(2,7-i%8))?1:0; printf(" %1d",timermode[31-i]); }
-//  for(i=0;i<MAX_DATA_LEN;i++) memory[i]=0; for (i=offs+2; i<datalen; i++) { if (loadaddr+i-(offs+2)<MAX_DATA_LEN) memory[loadaddr+i-(offs+2)]=filedata[i]; } 
-//  strend=1; for(i=0; i<32; i++) { if(strend!=0) strend=SIDtitle[i]=filedata[0x16+i]; else strend=SIDtitle[i]=0; }  printf("\nTitle: %s    ",SIDtitle);
-//  strend=1; for(i=0; i<32; i++) { if(strend!=0) strend=SIDauthor[i]=filedata[0x36+i]; else strend=SIDauthor[i]=0; }  printf("Author: %s    ",SIDauthor); 
-//  strend=1; for(i=0; i<32; i++) { if(strend!=0) strend=SIDinfo[i]=filedata[0x56+i]; else strend=SIDinfo[i]=0; } printf("Info: %s",SIDinfo);
-//  initaddr=filedata[0xA]+filedata[0xB]? filedata[0xA]*256+filedata[0xB] : loadaddr; playaddr=playaddf=filedata[0xC]*256+filedata[0xD]; 
-//  printf("\nInit:$%4.4X,Play:$%4.4X, ",initaddr,playaddr);
-//  subtune_amount=filedata[0xF]; preferred_SID_model[0] = (filedata[0x77]&0x30)>=0x20? 8580 : 6581; 
-//  printf("Subtunes:%d , preferred SID-model:%d", subtune_amount, preferred_SID_model[0]);
-//  preferred_SID_model[1] = (filedata[0x77]&0xC0)>=0x80 ? 8580 : 6581; preferred_SID_model[2] = (filedata[0x76]&3)>=2 ? 8580 : 6581; 
-//  SID_address[1] = filedata[0x7A]>=0x42 && (filedata[0x7A]<0x80 || filedata[0x7A]>=0xE0) ? 0xD000+filedata[0x7A]*16 : 0;
-//  SID_address[2] = filedata[0x7B]>=0x42 && (filedata[0x7B]<0x80 || filedata[0x7B]>=0xE0) ? 0xD000+filedata[0x7B]*16 : 0;
-//  SIDamount=1+(SID_address[1]>0)+(SID_address[2]>0); if(SIDamount>=2) printf("(SID1), %d(SID2:%4.4X)",preferred_SID_model[1],SID_address[1]); 
-//  if(SIDamount==3) printf(", %d(SID3:%4.4X)",preferred_SID_model[2],SID_address[2]);
-//  if (requested_SID_model!=-1) printf(" (requested:%d)",requested_SID_model); printf("\n");
-//  for (i=0;i<SIDamount;i++) {
-//   if (requested_SID_model==8580 || requested_SID_model==6581) SID_model[i] = requested_SID_model;
-//   else SID_model[i] = preferred_SID_model[i];
-//  }
-//  OUTPUT_SCALEDOWN = SID_CHANNEL_AMOUNT * 16 + 26; 
-//  if (SIDamount==2) OUTPUT_SCALEDOWN /= 0.6;
-//  else if (SIDamount>=3) OUTPUT_SCALEDOWN /= 0.4;
-//  cSID_init(samplerate); init(subtune);  
-//  SDL_PauseAudio(0); 
-//  fflush(stdin); if(tunelength!=-1) sleep(tunelength); else { printf("Press Enter to abort playback...\n"); getchar(); }
-
-//  SDL_PauseAudio(1);  if(playlistmode) goto openSID;
-//  SDL_CloseAudio(); 
-//  return 0;
-// }
-
-// char isExt(char *filename, char* ext) { //check file extension match
-//  char* LastDotPos = strrchr(filename,'.'); if (LastDotPos == NULL) return 0;
-//  if (!strcmp(LastDotPos,ext)) return 1; else return 0;
-// }
-
-
 void init (byte subt)
 {
  static int timeout; subtune = subt; initCPU(initaddr); initSID(); A=subtune; memory[1]=0x37; memory[0xDC05]=0;
- for(timeout=100000;timeout>=0;timeout--) { if (CPU()) break; } 
+ for(timeout=100000;timeout>=0;timeout--) { if (CPU()) break; }
  if (timermode[subtune] || memory[0xDC05]) { //&& playaddf {   //CIA timing
   if (!memory[0xDC05]) {memory[0xDC04]=0x24; memory[0xDC05]=0x40;} //C64 startup-default
   frame_sampleperiod = (memory[0xDC04]+memory[0xDC05]*256)/clock_ratio; }
@@ -185,17 +86,17 @@ void init (byte subt)
  //frame_sampleperiod = (memory[0xDC05]!=0 || (!timermode[subtune] && playaddf))? samplerate/PAL_FRAMERATE : (memory[0xDC04] + memory[0xDC05]*256) / clock_ratio; 
  if(playaddf==0) { playaddr = ((memory[1]&3)<2)? memory[0xFFFE]+memory[0xFFFF]*256 : memory[0x314]+memory[0x315]*256; printf("IRQ-playaddress:%4.4X\n",playaddr); }
  else { playaddr=playaddf; if (playaddr>=0xE000 && memory[1]==0x37) memory[1]=0x35; } //player under KERNAL (Crystal Kingdom Dizzy)
- initCPU(playaddr); framecnt=1; finished=0; CPUtime=0; 
+ initCPU(playaddr); framecnt=1; finished=0; CPUtime=0;
 }
 
 
 void play(void* userdata, Uint8 *stream, int len ) //called by SDL at samplerate pace
-{ 
- static int i,j, output;
+{
+ static int i, output;
  for(i=0;i<len;i+=2) {
   framecnt--; if (framecnt<=0) { framecnt=frame_sampleperiod; finished=0; PC=playaddr; SP=0xFF; } // printf("%d  %f\n",framecnt,playtime); }
-  if (finished==0) { 
-   while (CPUtime<=clock_ratio) { 
+  if (finished==0) {
+   while (CPUtime<=clock_ratio) {
     pPC=PC; if (CPU()>=0xFE || ( (memory[1]&3)>1 && pPC<0xE000 && (PC==0xEA31 || PC==0xEA81) ) ) {finished=1;break;} else CPUtime+=cycles; //RTS,RTI and IRQ player ROM return handling
     if ( (addr==0xDC05 || addr==0xDC04) && (memory[1]&3) && timermode[subtune] ) {
      frame_sampleperiod = (memory[0xDC04] + memory[0xDC05]*256) / clock_ratio;  //dynamic CIA-setting (Galway/Rubicon workaround)
@@ -211,9 +112,10 @@ void play(void* userdata, Uint8 *stream, int len ) //called by SDL at samplerate
    }
    CPUtime-=clock_ratio;
   }
-  output = SID(0,0xD400);
-  if (SIDamount>=2) output += SID(1,SID_address[1]); 
-  if (SIDamount==3) output += SID(2,SID_address[2]); 
+  output = runSID(0,0xD400);
+  if (SIDamount>=2) output += runSID(1,SID_address[1]);
+  if (SIDamount==3) output += runSID(2,SID_address[2]);
+  if (output>=32767) output=32767; else if (output<=-32768) output=-32768; //saturation logic on overload
   stream[i]=output&0xFF; stream[i+1]=output>>8;
  }
 }
@@ -223,7 +125,7 @@ void play(void* userdata, Uint8 *stream, int len ) //called by SDL at samplerate
 //--------------------------------- CPU emulation -------------------------------------------
 
 
- void initCPU (unsigned int mempos) { PC=mempos; A=0; X=0; Y=0; ST=0; SP=0xFF; } 
+ void initCPU (unsigned int mempos) { PC=mempos; A=0; X=0; Y=0; ST=0; SP=0xFF; }
 
  //My CPU implementation is based on the instruction table by Graham at codebase64.
  //After some examination of the table it was clearly seen that columns of the table (instructions' 2nd nybbles)
@@ -240,110 +142,112 @@ void play(void* userdata, Uint8 *stream, int len ) //called by SDL at samplerate
     case 0x19: case 0x1B: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256 + Y; cycles=5; break; //abs,y //(4..5 cycles, 7 cycles for R-M-W)
     case 0x1D: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256 + X; cycles=5; break; //abs,x //(4..5 cycles, 7 cycles for R-M-W)
     case 0xD: case 0xF: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256; cycles=4; break; //abs
-    case 0x15: PC++; addr = memory[PC] + X; cycles=4; break; //zp,x
+    case 0x15: PC++; addr = (memory[PC] + X) & 0xFF; cycles=4; break; //zp,x (with zeropage-wraparound of 6502)
     case 5: case 7: PC++; addr = memory[PC]; cycles=3; break; //zp
-    case 0x17: PC++; if ((IR&0xC0)!=0x80) { addr = memory[PC] + X; cycles=4; } //zp,x for illegal opcodes
-               else { addr = memory[PC] + Y; cycles=4; }  break; //zp,y for LAX/SAX illegal opcodes
-    case 0x1F: PC++; if ((IR&0xC0)!=0x80) { addr = memory[PC] + memory[++PC]*256 + X; cycles=5; } //abs,x for illegal opcodes
-               else { addr = memory[PC] + memory[++PC]*256 + Y; cycles=5; }  break; //abs,y for LAX/SAX illegal opcodes
-    case 9: case 0xB: PC++; addr = PC; cycles=2;  //immediate
+    case 0x17: PC++; if ((IR&0xC0)!=0x80) { addr = (memory[PC] + X) & 0xFF; cycles=4; } //zp,x for illegal opcodes
+               else { addr = (memory[PC] + Y) & 0xFF; cycles=4; }  break; //zp,y for LAX/SAX illegal opcodes (with zeropage-wraparound of 6502)
+    case 0x1F: PC++; if ((IR&0xC0)!=0x80) { addr = memory[PC]; addr += memory[++PC]*256 + X; cycles=5; } //abs,x for illegal opcodes
+               else { addr = memory[PC]; addr += memory[++PC]*256 + Y; cycles=5; }  break; //abs,y for LAX/SAX illegal opcodes
+    case 9: case 0xB: PC++; addr = PC; cycles=2; break; //immediate
    }
    addr&=0xFFFF;
    switch (IR&0xE0) {
     case 0x60: if ((IR&0x1F)!=0xB) { if((IR&3)==3) {T=(memory[addr]>>1)+(ST&1)*128; ST&=124; ST|=(T&1); memory[addr]=T; cycles+=2;}   //ADC / RRA (ROR+ADC)
-                T=A; A+=memory[addr]+(ST&1); ST&=60; ST|=(A&128)|(A>255); A&=0xFF; ST |= (!A)<<1 | ( !((T^memory[addr])&0x80) & ((T^A)&0x80) ) >> 1; }
-               else { A&=memory[addr]; T+=memory[addr]+(ST&1); ST&=60; ST |= (T>255) | ( !((A^memory[addr])&0x80) & ((T^A)&0x80) ) >> 1; //V-flag set by intermediate ADC mechanism: (A&mem)+mem
+                T=A; A+=memory[addr]+(ST&1); ST&=60; ST|=(A&128)|(A>255); A&=0xFF; ST |= ((!A)<<1) | ( ( (!((T^memory[addr])&0x80)) & ((T^A)&0x80) ) >> 1); }
+               else { A&=memory[addr]; T+=memory[addr]+(ST&1); ST&=60; ST |= (T>255) | ( ( (!((A^memory[addr])&0x80)) & ((T^A)&0x80) ) >> 1); //V-flag set by intermediate ADC mechanism: (A&mem)+mem
                 T=A; A=(A>>1)+(ST&1)*128; ST|=(A&128)|(T>127); ST|=(!A)<<1; }  break; // ARR (AND+ROR, bit0 not going to C, but C and bit7 get exchanged.)
     case 0xE0: if((IR&3)==3 && (IR&0x1F)!=0xB) {memory[addr]++;cycles+=2;}  T=A; A-=memory[addr]+!(ST&1); //SBC / ISC(ISB)=INC+SBC
-               ST&=60; ST|=(A&128)|(A>=0); A&=0xFF; ST |= (!A)<<1 | ( ((T^memory[addr])&0x80) & ((T^A)&0x80) ) >> 1; break; 
+               ST&=60; ST|=(A&128)|(A>=0); A&=0xFF; ST |= ((!A)<<1) | ( ( ((T^memory[addr])&0x80) & ((T^A)&0x80) ) >> 1); break;
     case 0xC0: if((IR&0x1F)!=0xB) { if ((IR&3)==3) {memory[addr]--; cycles+=2;}  T=A-memory[addr]; } // CMP / DCP(DEC+CMP)
-               else {X=T=(A&X)-memory[addr];} /*SBX(AXS)*/  ST&=124;ST|=(!(T&0xFF))<<1|(T&128)|(T>=0);  break;  //SBX (AXS) (CMP+DEX at the same time)
-    case 0x00: if ((IR&0x1F)!=0xB) { if ((IR&3)==3) {ST&=124; ST|=(memory[addr]>127); memory[addr]<<=1; cycles+=2;}  
-                A|=memory[addr]; ST&=125;ST|=(!A)<<1|(A&128); } //ORA / SLO(ASO)=ASL+ORA
-               else {A&=memory[addr]; ST&=124;ST|=(!A)<<1|(A&128)|(A>127);}  break; //ANC (AND+Carry=bit7)
-    case 0x20: if ((IR&0x1F)!=0xB) { if ((IR&3)==3) {T=(memory[addr]<<1)+(ST&1); ST&=124; ST|=(T>255); T&=0xFF; memory[addr]=T; cycles+=2;}  
-                A&=memory[addr]; ST&=125; ST|=(!A)<<1|(A&128); }  //AND / RLA (ROL+AND)
-               else {A&=memory[addr]; ST&=124;ST|=(!A)<<1|(A&128)|(A>127);}  break; //ANC (AND+Carry=bit7)
+               else {X=T=(A&X)-memory[addr];} /*SBX(AXS)*/  ST&=124; ST |= ((!(T&0xFF))<<1) | (T&128)|(T>=0);  break;  //SBX (AXS) (CMP+DEX at the same time)
+    case 0x00: if ((IR&0x1F)!=0xB) { if ((IR&3)==3) {ST&=124; ST|=(memory[addr]>127); memory[addr]<<=1; cycles+=2;}
+                A|=memory[addr]; ST&=125; ST |= ((!A)<<1) | (A&128); } //ORA / SLO(ASO)=ASL+ORA
+               else {A&=memory[addr]; ST&=124; ST |= ((!A)<<1) | (A&128)|(A>127);}  break; //ANC (AND+Carry=bit7)
+    case 0x20: if ((IR&0x1F)!=0xB) { if ((IR&3)==3) {T=(memory[addr]<<1)+(ST&1); ST&=124; ST|=(T>255); T&=0xFF; memory[addr]=T; cycles+=2;}
+                A&=memory[addr]; ST&=125; ST |= ((!A)<<1) | (A&128); }  //AND / RLA (ROL+AND)
+               else {A&=memory[addr]; ST&=124; ST |= ((!A)<<1) | (A&128)|(A>127);}  break; //ANC (AND+Carry=bit7)
     case 0x40: if ((IR&0x1F)!=0xB) { if ((IR&3)==3) {ST&=124; ST|=(memory[addr]&1); memory[addr]>>=1; cycles+=2;}
-                A^=memory[addr]; ST&=125;ST|=(!A)<<1|(A&128); } //EOR / SRE(LSE)=LSR+EOR
+                A^=memory[addr]; ST&=125; ST |= ((!A)<<1) | (A&128); } //EOR / SRE(LSE)=LSR+EOR
                 else {A&=memory[addr]; ST&=124; ST|=(A&1); A>>=1; A&=0xFF; ST|=(A&128)|((!A)<<1); }  break; //ALR(ASR)=(AND+LSR)
-    case 0xA0: if ((IR&0x1F)!=0x1B) { A=memory[addr]; if((IR&3)==3) X=A; } //LDA / LAX (illegal, used by my 1 rasterline player) 
+    case 0xA0: if ((IR&0x1F)!=0x1B) { A=memory[addr]; if((IR&3)==3) X=A; } //LDA / LAX (illegal, used by my 1 rasterline player)
                else {A=X=SP=memory[addr]&SP;} /*LAS(LAR)*/  ST&=125; ST|=((!A)<<1) | (A&128); break;  // LAS (LAR)
     case 0x80: if ((IR&0x1F)==0xB) { A = X & memory[addr]; ST&=125; ST|=(A&128) | ((!A)<<1); } //XAA (TXA+AND), highly unstable on real 6502!
                else if ((IR&0x1F)==0x1B) { SP=A&X; memory[addr]=SP&((addr>>8)+1); } //TAS(SHS) (SP=A&X, mem=S&H} - unstable on real 6502
-               else {memory[addr]=A & (((IR&3)==3)?X:0xFF); storadd=addr;}  break; //STA / SAX (at times same as AHX/SHX/SHY) (illegal) 
+               else {memory[addr]=A & (((IR&3)==3)?X:0xFF); storadd=addr;}  break; //STA / SAX (at times same as AHX/SHX/SHY) (illegal)
    }
   }
-  
+
   else if(IR&2) {  //nybble2:  2:illegal/LDX, 6:A/X/INC/DEC, A:Accu-shift/reg.transfer/NOP, E:shift/X/INC/DEC
    switch (IR&0x1F) { //addressing modes
     case 0x1E: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256 + ( ((IR&0xC0)!=0x80) ? X:Y ); cycles=5; break; //abs,x / abs,y
     case 0xE: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256; cycles=4; break; //abs
-    case 0x16: PC++; addr = memory[PC] + ( ((IR&0xC0)!=0x80) ? X:Y ); cycles=4; break; //zp,x / zp,y
+    case 0x16: PC++; addr = memory[PC] + ( ( ((IR&0xC0)!=0x80) ? X:Y ) & 0xFF ); cycles=4; break; //zp,x / zp,y
     case 6: PC++; addr = memory[PC]; cycles=3; break; //zp
     case 2: PC++; addr = PC; cycles=2;  //imm.
-   }  
-   addr&=0xFFFF; 
+   }
+   addr&=0xFFFF;
    switch (IR&0xE0) {
     case 0x00: ST&=0xFE; case 0x20: if((IR&0xF)==0xA) { A=(A<<1)+(ST&1); ST&=124;ST|=(A&128)|(A>255); A&=0xFF; ST|=(!A)<<1; } //ASL/ROL (Accu)
       else { T=(memory[addr]<<1)+(ST&1); ST&=124;ST|=(T&128)|(T>255); T&=0xFF; ST|=(!T)<<1; memory[addr]=T; cycles+=2; }  break; //RMW (Read-Write-Modify)
     case 0x40: ST&=0xFE; case 0x60: if((IR&0xF)==0xA) { T=A; A=(A>>1)+(ST&1)*128; ST&=124;ST|=(A&128)|(T&1); A&=0xFF; ST|=(!A)<<1; } //LSR/ROR (Accu)
       else { T=(memory[addr]>>1)+(ST&1)*128; ST&=124;ST|=(T&128)|(memory[addr]&1); T&=0xFF; ST|=(!T)<<1; memory[addr]=T; cycles+=2; }  break; //memory (RMW)
-    case 0xC0: if(IR&4) { memory[addr]--; ST&=125;ST|=(!memory[addr])<<1|(memory[addr]&128); cycles+=2; } //DEC
-      else {X--; X&=0xFF; ST&=125;ST|=(!X)<<1|(X&128);}  break; //DEX
-    case 0xA0: if((IR&0xF)!=0xA) X=memory[addr];  else if(IR&0x10) {X=SP;break;}  else X=A;  ST&=125;ST|=(!X)<<1|(X&128);  break; //LDX/TSX/TAX
-    case 0x80: if(IR&4) {memory[addr]=X;storadd=addr;}  else if(IR&0x10) SP=X;  else {A=X; ST&=125;ST|=(!A)<<1|(A&128);}  break; //STX/TXS/TXA
-    case 0xE0: if(IR&4) { memory[addr]++; ST&=125;ST|=(!memory[addr])<<1|(memory[addr]&128); cycles+=2; } //INC/NOP
+    case 0xC0: if(IR&4) { memory[addr]--; ST&=125; ST |= ((!memory[addr])<<1) | (memory[addr]&128); cycles+=2; } //DEC
+      else {X--; X&=0xFF; ST&=125; ST |= ((!X)<<1) | (X&128);}  break; //DEX
+    case 0xA0: if((IR&0xF)!=0xA) X=memory[addr];  else if(IR&0x10) {X=SP;break;}  else X=A;  ST&=125; ST |= ((!X)<<1) | (X&128);  break; //LDX/TSX/TAX
+    case 0x80: if(IR&4) {memory[addr]=X;storadd=addr;}  else if(IR&0x10) SP=X;  else {A=X; ST&=125; ST |= ((!A)<<1) | (A&128);}  break; //STX/TXS/TXA
+    case 0xE0: if(IR&4) { memory[addr]++; ST&=125; ST |= ((!memory[addr])<<1) | (memory[addr]&128); cycles+=2; } //INC/NOP
    }
   }
-  
+
   else if((IR&0xC)==8) {  //nybble2:  8:register/status
    switch (IR&0xF0) {
-    case 0x60: SP++; SP&=0xFF; A=memory[0x100+SP]; ST&=125;ST|=(!A)<<1|(A&128); cycles=4; break; //PLA
-    case 0xC0: Y++; Y&=0xFF; ST&=125;ST|=(!Y)<<1|(Y&128); break; //INY
-    case 0xE0: X++; X&=0xFF; ST&=125;ST|=(!X)<<1|(X&128); break; //INX
-    case 0x80: Y--; Y&=0xFF; ST&=125;ST|=(!Y)<<1|(Y&128); break; //DEY
+    case 0x60: SP++; SP&=0xFF; A=memory[0x100+SP]; ST&=125; ST |= ((!A)<<1) | (A&128); cycles=4; break; //PLA
+    case 0xC0: Y++; Y&=0xFF; ST&=125; ST|=((!Y)<<1)|(Y&128); break; //INY
+    case 0xE0: X++; X&=0xFF; ST&=125; ST|=((!X)<<1)|(X&128); break; //INX
+    case 0x80: Y--; Y&=0xFF; ST&=125; ST|=((!Y)<<1)|(Y&128); break; //DEY
     case 0x00: memory[0x100+SP]=ST; SP--; SP&=0xFF; cycles=3; break; //PHP
     case 0x20: SP++; SP&=0xFF; ST=memory[0x100+SP]; cycles=4; break; //PLP
     case 0x40: memory[0x100+SP]=A; SP--; SP&=0xFF; cycles=3; break; //PHA
-    case 0x90: A=Y; ST&=125;ST|=(!A)<<1|(A&128); break; //TYA
-    case 0xA0: Y=A; ST&=125;ST|=(!Y)<<1|(Y&128); break; //TAY
+    case 0x90: A=Y; ST&=125; ST|=((!A)<<1)|(A&128); break; //TYA
+    case 0xA0: Y=A; ST&=125; ST|=((!Y)<<1)|(Y&128); break; //TAY
     default: if(flagsw[IR>>5]&0x20) ST|=(flagsw[IR>>5]&0xDF); else ST&=255-(flagsw[IR>>5]&0xDF);  //CLC/SEC/CLI/SEI/CLV/CLD/SED
    }
   }
-  
+
   else {  //nybble2:  0: control/branch/Y/compare  4: Y/compare  C:Y/compare/JMP
-   if ((IR&0x1F)==0x10) { PC++; T=memory[PC]; if(T&0x80) T-=0x100; //BPL/BMI/BVC/BVS/BCC/BCS/BNE/BEQ  relative branch 
-    if(IR&0x20) {if (ST&branchflag[IR>>6]) {PC+=T;cycles=3;}} else {if (!(ST&branchflag[IR>>6])) {PC+=T;cycles=3;}}  } 
+   if ((IR&0x1F)==0x10) { PC++; T=memory[PC]; if(T&0x80) T-=0x100; //BPL/BMI/BVC/BVS/BCC/BCS/BNE/BEQ  relative branch
+    if(IR&0x20) {if (ST&branchflag[IR>>6]) {PC+=T;cycles=3;}} else {if (!(ST&branchflag[IR>>6])) {PC+=T;cycles=3;}}  }
    else {  //nybble2:  0:Y/control/Y/compare  4:Y/compare  C:Y/compare/JMP
     switch (IR&0x1F) { //addressing modes
      case 0: PC++; addr = PC; cycles=2; break; //imm. (or abs.low for JSR/BRK)
      case 0x1C: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256 + X; cycles=5; break; //abs,x
      case 0xC: PC++; addr=memory[PC]; PC++; addr+=memory[PC]*256; cycles=4; break; //abs
-     case 0x14: PC++; addr = memory[PC] + X; cycles=4; break; //zp,x
+     case 0x14: PC++; addr = (memory[PC] + X) & 0xFF; cycles=4; break; //zp,x
      case 4: PC++; addr = memory[PC]; cycles=3;  //zp
-    }  
-    addr&=0xFFFF;  
+    }
+    addr&=0xFFFF;
     switch (IR&0xE0) {
-     case 0x00: memory[0x100+SP]=PC%256; SP--;SP&=0xFF; memory[0x100+SP]=PC/256;  SP--;SP&=0xFF; memory[0x100+SP]=ST; SP--;SP&=0xFF; 
-       PC = memory[0xFFFE]+memory[0xFFFF]*256-1; cycles=7; break; //BRK
-     case 0x20: if(IR&0xF) { ST &= 0x3D; ST |= (memory[addr]&0xC0) | ( !(A&memory[addr]) )<<1; } //BIT
-      else { memory[0x100+SP]=(PC+2)%256; SP--;SP&=0xFF; memory[0x100+SP]=(PC+2)/256;  SP--;SP&=0xFF; PC=memory[addr]+memory[addr+1]*256-1; cycles=6; }  break; //JSR
+     case 0x00: if(!(IR&4)) { memory[0x100+SP]=PC%256; SP--;SP&=0xFF; memory[0x100+SP]=PC/256;  SP--;SP&=0xFF; memory[0x100+SP]=ST; SP--;SP&=0xFF;
+                              PC = memory[0xFFFE]+memory[0xFFFF]*256-1; cycles=7; }  break; //BRK / NOP-absolute/abs,x
+     case 0x20: if(IR&0xF) { ST &= 0x3D; ST |= (memory[addr]&0xC0) | ( (!(A&memory[addr]))<<1 ); } //BIT
+                else { memory[0x100+SP]=(PC+2)%256; SP--;SP&=0xFF; memory[0x100+SP]=(PC+2)/256;  SP--;SP&=0xFF; PC=memory[addr]+memory[addr+1]*256-1; cycles=6; }  break; //JSR
      case 0x40: if(IR&0xF) { PC = addr-1; cycles=3; } //JMP
-      else { if(SP>=0xFF) return 0xFE; SP++;SP&=0xFF; ST=memory[0x100+SP]; SP++;SP&=0xFF; T=memory[0x100+SP]; SP++;SP&=0xFF; PC=memory[0x100+SP]+T*256-1; cycles=6; }  break; //RTI
+                else { if(SP>=0xFF) return 0xFE; SP++;SP&=0xFF; ST=memory[0x100+SP]; SP++;SP&=0xFF; T=memory[0x100+SP]; SP++;SP&=0xFF; PC=memory[0x100+SP]+T*256-1; cycles=6; } //RTI
+                break;
      case 0x60: if(IR&0xF) { PC = memory[addr]+memory[addr+1]*256-1; cycles=5; } //JMP() (indirect)
       else { if(SP>=0xFF) return 0xFF; SP++;SP&=0xFF; T=memory[0x100+SP]; SP++;SP&=0xFF; PC=memory[0x100+SP]+T*256-1; cycles=6; }  break; //RTS
-     case 0xC0: T=Y-memory[addr]; ST&=124;ST|=(!(T&0xFF))<<1|(T&128)|(T>=0); break; //CPY
-     case 0xE0: T=X-memory[addr]; ST&=124;ST|=(!(T&0xFF))<<1|(T&128)|(T>=0); break; //CPX
-     case 0xA0: Y=memory[addr]; ST&=125;ST|=(!Y)<<1|(Y&128); break; //LDY
-     case 0x80: memory[addr]=Y; storadd=addr;  //STY
+     case 0xC0: T=Y-memory[addr]; ST&=124; ST |= ((!(T&0xFF))<<1) | (T&128) | (T>=0); break; //CPY
+     case 0xE0: T=X-memory[addr]; ST&=124; ST |= ((!(T&0xFF))<<1) | (T&128) | (T>=0); break; //CPX
+     case 0xA0: Y=memory[addr]; ST&=125; ST|=((!Y)<<1)|(Y&128); break; //LDY
+     case 0x80: if(IR&4) {memory[addr]=Y; storadd=addr;}  break; //STY / NOP #imm
+
     }
    }
   }
- 
-  PC++; //PC&=0xFFFF; 
-  return 0; 
- } 
+
+  PC++; //PC&=0xFFFF;
+  return 0;
+ }
 
 
 
@@ -375,12 +279,18 @@ void cSID_init(int samplerate)
  //cutoff_top_6581 = 20000; //Hz // (26000/0.47);  // 1 - exp( -2 * 3.14 * (26000/0.47) / samplerate);   //cutoff range is 9 octaves stated by datasheet, but process variation might eliminate any filter spec.
  //cutoff_ratio_6581 = -2 * 3.14 * (cutoff_top_6581 / 2048) / samplerate; //(cutoff_top_6581-cutoff_bottom_6581)/(2048.0-192.0); //datasheet: 30Hz..12kHz with 2.2pF -> 140Hz..56kHz with 470pF?
 
+#ifdef NEW_COMBINED_WAVEFORMS
+ createCombinedWF(TriSaw_8580, 0.5, 2.2, 0.9);
+ createCombinedWF(PulseSaw_8580, 0.23, 1.27, 0.55);
+ createCombinedWF(PulseTriSaw_8580, 0.5, 1.6, 0.8);
+#else
  createCombinedWF(TriSaw_8580, 0.8, 2.4, 0.64);
  createCombinedWF(PulseSaw_8580, 1.4, 1.9, 0.68);
  createCombinedWF(PulseTriSaw_8580, 0.8, 2.5, 0.64);
-    
+#endif
+
  for(i = 0; i < 9; i++) {
-  ADSRstate[i] = HOLDZERO_BITMASK; envcnt[i] = 0; ratecnt[i] = 0; 
+  ADSRstate[i] = HOLDZERO_BITMASK; envcnt[i] = 0; ratecnt[i] = 0;
   phaseaccu[i] = 0; prevaccu[i] = 0; expcnt[i] = 0; prevSR[i]=0;
   noise_LFSR[i] = 0x7FFFFF; prevwfout[i] = 0;
  }
@@ -393,10 +303,10 @@ void cSID_init(int samplerate)
 
 //registers: 0:freql1  1:freqh1  2:pwml1  3:pwmh1  4:ctrl1  5:ad1   6:sr1  7:freql2  8:freqh2  9:pwml2 10:pwmh2 11:ctrl2 12:ad2  13:sr 14:freql3 15:freqh3 16:pwml3 17:pwmh3 18:ctrl3 19:ad3  20:sr3 
 //           21:cutoffl 22:cutoffh 23:flsw_reso 24:vol_ftype 25:potX 26:potY 27:OSC3 28:ENV3
-void initSID() { 
+void initSID() {
  int i;
  for(i=0xD400;i<=0xD7FF;i++) memory[i]=0; for(i=0xDE00;i<=0xDFFF;i++) memory[i]=0;
- for(i=0;i<9;i++) {ADSRstate[i]=HOLDZERO_BITMASK; ratecnt[i]=envcnt[i]=expcnt[i]=0;} 
+ for(i=0;i<9;i++) {ADSRstate[i]=HOLDZERO_BITMASK; ratecnt[i]=envcnt[i]=expcnt[i]=0;}
 }
 
 
@@ -405,7 +315,7 @@ void initSID() {
 //(The SID reverse-engineering sites were also good sources.)
 //Note that I avoided many internal/automatic variables from the SID function, assuming better speed this way. (Not using stack as much, but I'm not sure and it may depend on platform...)
 //(The same is true for CPU emulation and player-code.)
-int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is the number of SID to iterate (0..2)
+int runSID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is the number of SID to iterate (0..2)
 {
  //better keep these variables static so they won't slow down the routine like if they were internal automatic variables always recreated
  static byte channel, ctrl, SR, prevgate, wf, test, *sReg, *vReg;
@@ -440,7 +350,7 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
    ratecnt[channel] -= period; //compensation for timing instead of simply setting 0 on rate-counter overload
    if ((ADSRstate[channel] & ATTACK_BITMASK) || ++expcnt[channel] == ADSR_exptable[envcnt[channel]]) {
     if (!(ADSRstate[channel] & HOLDZERO_BITMASK)) {
-     if (ADSRstate[channel] & ATTACK_BITMASK) 
+     if (ADSRstate[channel] & ATTACK_BITMASK)
      { envcnt[channel]+=step; if (envcnt[channel]>=0xFF) {envcnt[channel]=0xFF; ADSRstate[channel] &= 0xFF-ATTACK_BITMASK;} }
      else if ( !(ADSRstate[channel] & DECAYSUSTAIN_BITMASK) || envcnt[channel] > (SR&0xF0) + (SR>>4) )
      { envcnt[channel]-=step; if (envcnt[channel]<=0 && envcnt[channel]+step!=0) {envcnt[channel]=0; ADSRstate[channel]|=HOLDZERO_BITMASK;} }
@@ -449,7 +359,7 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
    }
   }
   envcnt[channel] &= 0xFF;
- 
+
   //WAVE-generation code (phase accumulator and waveform-selector):
   test = ctrl & TEST_BITMASK;  wf = ctrl & 0xF0;  accuadd = (vReg[0] + vReg[1] * 256) * clock_ratio;
   if (test || ((ctrl & SYNC_BITMASK) && sourceMSBrise[num])) phaseaccu[channel] = 0;
@@ -457,19 +367,19 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
   phaseaccu[channel] &= 0xFFFFFF; MSB = phaseaccu[channel] & 0x800000; sourceMSBrise[num] = (MSB > (prevaccu[channel] & 0x800000)) ? 1 : 0;
   if (wf & NOISE_BITMASK) { //noise waveform
    tmp = noise_LFSR[channel];
-   if (((phaseaccu[channel] & 0x100000) != (prevaccu[channel] & 0x100000)) || accuadd >= 0x100000) //clock LFSR all time if clockrate exceeds observable at given samplerate 
+   if (((phaseaccu[channel] & 0x100000) != (prevaccu[channel] & 0x100000)) || accuadd >= 0x100000) //clock LFSR all time if clockrate exceeds observable at given samplerate
    { step = (tmp & 0x400000) ^ ((tmp & 0x20000) << 5); tmp = ((tmp << 1) + (step ? 1 : test)) & 0x7FFFFF; noise_LFSR[channel]=tmp; }
    //we simply zero output when other waveform is mixed with noise. On real SID LFSR continuously gets filled by zero and locks up. ($C1 waveform with pw<8 can keep it for a while...)
    wfout = (wf & 0x70) ? 0 : ((tmp & 0x100000) >> 5) + ((tmp & 0x40000) >> 4) + ((tmp & 0x4000) >> 1) + ((tmp & 0x800) << 1) + ((tmp & 0x200) << 2) + ((tmp & 0x20) << 5) + ((tmp & 0x04) << 7) + ((tmp & 0x01) << 8);
-  } 
+  }
   else if (wf & PULSE_BITMASK) { //simple pulse
-   pw = (vReg[2] + (vReg[3] & 0xF) * 256) * 16;  tmp = (int) accuadd >> 9;  
-   if (0 < pw && pw < tmp) pw = tmp;  tmp ^= 0xFFFF;  if (pw > tmp) pw = tmp;  
+   pw = (vReg[2] + (vReg[3] & 0xF) * 256) * 16;  tmp = (int) accuadd >> 9;
+   if (0 < pw && pw < tmp) pw = tmp;  tmp ^= 0xFFFF;  if (pw > tmp) pw = tmp;
    tmp = phaseaccu[channel] >> 8;
    if (wf == PULSE_BITMASK) { //simple pulse, most often used waveform, make it sound as clean as possible without oversampling
     //One of my biggest success with the SwinSID-variant was that I could clean the high-pitched and thin sounds.
     //(You might have faced with the unpleasant sound quality of high-pitched sounds without oversampling. We need so-called 'band-limited' synthesis instead.
-    // There are a lot of articles about this issue on the internet. In a nutshell, the harsh edges produce harmonics that exceed the 
+    // There are a lot of articles about this issue on the internet. In a nutshell, the harsh edges produce harmonics that exceed the
     // Nyquist frequency (samplerate/2) and they are folded back into hearable range, producing unvanted ringmodulation-like effect.)
     //After so many trials with dithering/filtering/oversampling/etc. it turned out I can't eliminate the fukkin aliasing in time-domain, as suggested at pages.
     //Oversampling (running the wave-generation 8 times more) was not a way at 32MHz SwinSID. It might be an option on PC but I don't prefer it in JavaScript.)
@@ -483,7 +393,7 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
    }
    else { //combined pulse
     wfout = (tmp >= pw || test) ? 0xFFFF:0; //(this would be enough for a simple but aliased-at-high-pitches pulse)
-    if (wf&TRI_BITMASK) { 
+    if (wf&TRI_BITMASK) {
      if (wf&SAW_BITMASK) { wfout = wfout? combinedWF(num,channel,PulseTriSaw_8580,tmp>>4,1,vReg[1]) : 0; } //pulse+saw+triangle (waveform nearly identical to tri+saw)
      else { tmp=phaseaccu[channel]^(ctrl&RING_BITMASK?sourceMSB[num]:0); wfout = (wfout)? combinedWF(num,channel,PulseSaw_8580,(tmp^(tmp&0x800000?0xFFFFFF:0))>>11,0,vReg[1]) : 0; } } //pulse+triangle
     else if (wf&SAW_BITMASK) wfout = wfout? combinedWF(num,channel,PulseSaw_8580,tmp>>4,1,vReg[1]) : 0; //pulse+saw
@@ -492,34 +402,34 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
   else if (wf&SAW_BITMASK) { //saw
    wfout=phaseaccu[channel]>>8; //saw (this row would be enough for simple but aliased-at-high-pitch saw)
    //The anti-aliasing (cleaning) of high-pitched sawtooth wave works by the same principle as mentioned above for the pulse,
-   //but the sawtooth has even harsher edge/transition, and as the falling edge gets longer, tha rising edge should became shorter, 
+   //but the sawtooth has even harsher edge/transition, and as the falling edge gets longer, tha rising edge should became shorter,
    //and to keep the amplitude, it should be multiplied a little bit (with reciprocal of rising-edge steepness).
    //The waveform at the output essentially becomes an asymmetric triangle, more-and-more approaching symmetric shape towards high frequencies.
    //(If you check a recording from the real SID, you can see a similar shape, the high-pitch sawtooth waves are triangle-like...)
    //But for deep sounds the sawtooth is really close to a sawtooth, as there is no aliasing there, but deep sounds should be sharp...
    if (wf&TRI_BITMASK) wfout = combinedWF(num,channel,TriSaw_8580,wfout>>4,1,vReg[1]); //saw+triangle
    else { //simple cleaned (bandlimited) saw
-    steep=(accuadd/65536.0)/288.0;
-    wfout += wfout*steep; if(wfout>0xFFFF) wfout=0xFFFF-(wfout-0x10000)/steep; 
-   } 
+    steep=(accuadd/65536.0)/288.0; if(steep==0) steep=1; //avoid division by zero
+    wfout += wfout*steep; if(wfout>0xFFFF) wfout=0xFFFF-(wfout-0x10000)/steep;
+   }
   }
   else if (wf&TRI_BITMASK) { //triangle (this waveform has no harsh edges, so it doesn't suffer from strong aliasing at high pitches)
-   tmp=phaseaccu[channel]^(ctrl&RING_BITMASK?sourceMSB[num]:0); wfout = (tmp^(tmp&0x800000?0xFFFFFF:0)) >> 7; 
+   tmp=phaseaccu[channel]^(ctrl&RING_BITMASK?sourceMSB[num]:0); wfout = (tmp^(tmp&0x800000?0xFFFFFF:0)) >> 7;
   }
   wfout&=0xFFFF; if (wf) prevwfout[channel] = wfout; else { wfout = prevwfout[channel]; } //emulate waveform 00 floating wave-DAC (on real SID waveform00 decays after 15s..50s depending on temperature?)
   prevaccu[channel] = phaseaccu[channel]; sourceMSB[num] = MSB;            //(So the decay is not an exact value. Anyway, we just simply keep the value to avoid clicks and support SounDemon digi later...)
 
   //routing the channel signal to either the filter or the unfiltered master output depending on filter-switch SID-registers
   if (sReg[0x17] & FILTSW[channel]) filtin += ((int)wfout - 0x8000) * envcnt[channel] / 256;
-  else if ((FILTSW[channel] != 4) || !(sReg[0x18] & OFF3_BITMASK)) 
+  else if ((FILTSW[channel] != 4) || !(sReg[0x18] & OFF3_BITMASK))
    nonfilt += ((int)wfout - 0x8000) * envcnt[channel] / 256;
  }
  //update readable SID1-registers (some SID tunes might use 3rd channel ENV3/OSC3 value as control)
- if(num==0, memory[1]&3) { sReg[0x1B]=wfout>>8; sReg[0x1C]=envcnt[3]; } //OSC3, ENV3 (some players rely on it)    
+ if(num==0 && memory[1]&3) { sReg[0x1B]=wfout>>8; sReg[0x1C]=envcnt[3]; } //OSC3, ENV3 (some players rely on it)
 
  //FILTER: two integrator loop bi-quadratic filter, workings learned from resid code, but I kindof simplified the equations
  //The phases of lowpass and highpass outputs are inverted compared to the input, but bandpass IS in phase with the input signal.
- //The 8580 cutoff frequency control-curve is ideal (binary-weighted resistor-ladder VCRs), while the 6581 has a treshold, and below that it 
+ //The 8580 cutoff frequency control-curve is ideal (binary-weighted resistor-ladder VCRs), while the 6581 has a treshold, and below that it
  //outputs a constant ~200Hz cutoff frequency. (6581 uses MOSFETs as VCRs to control cutoff causing nonlinearity and some 'distortion' due to resistance-modulation.
  //There's a cca. 1.53Mohm resistor in parallel with the MOSFET in 6581 which doesn't let the frequency go below 200..220Hz
  //Even if the MOSFET doesn't conduct at all. 470pF capacitors are small, so 6581 can't go below this cutoff-frequency with 1.5MOhm.)
@@ -527,14 +437,14 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
  if (SID_model[num] == 8580) {
   cutoff[num] = ( 1 - exp((cutoff[num]+2) * cutoff_ratio_8580) ); //linear curve by resistor-ladder VCR
   resonance[num] = ( pow(2, ((4 - (sReg[0x17] >> 4)) / 8.0)) );
- } 
+ }
  else { //6581
   cutoff[num] += round(filtin*FILTER_DISTORTION_6581); //MOSFET-VCR control-voltage-modulation (resistance-modulation aka 6581 filter distortion) emulation
   rDS_VCR_FET = cutoff[num]<=VCR_FET_TRESHOLD ? 100000000.0 //below Vth treshold Vgs control-voltage FET presents an open circuit
    : cutoff_steepness_6581/(cutoff[num]-VCR_FET_TRESHOLD); // rDS ~ (-Vth*rDSon) / (Vgs-Vth)  //above Vth FET drain-source resistance is proportional to reciprocal of cutoff-control voltage
   cutoff[num] = ( 1 - exp( cap_6581_reciprocal / (VCR_SHUNT_6581*rDS_VCR_FET/(VCR_SHUNT_6581+rDS_VCR_FET)) / samplerate ) ); //curve with 1.5MOhm VCR parallel Rshunt emulation
   resonance[num] = ( (sReg[0x17] > 0x5F) ? 8.0 / (sReg[0x17] >> 4) : 1.41 );
- }  
+ }
  filtout=0;
  ftmp = filtin + prevbandpass[num] * resonance[num] + prevlowpass[num];
  if (sReg[0x18] & HIGHPASS_BITMASK) filtout -= ftmp;
@@ -543,7 +453,7 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
  if (sReg[0x18] & BANDPASS_BITMASK) filtout -= ftmp;
  ftmp = prevlowpass[num] + ftmp * cutoff[num];
  prevlowpass[num] = ftmp;
- if (sReg[0x18] & LOWPASS_BITMASK) filtout += ftmp;    
+ if (sReg[0x18] & LOWPASS_BITMASK) filtout += ftmp;
 
  //output stage for one SID
  //when it comes to $D418 volume-register digi playback, I made an AC / DC separation for $D418 value in the SwinSID at low (20Hz or so) cutoff-frequency,
@@ -551,7 +461,7 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
  //This solved 2 issues: Thanks to the lowpass filtering of the volume-control, SID tunes where digi is played together with normal SID channels,
  //won't sound distorted anymore, and the volume-clicks disappear when setting SID-volume. (This is useful for fade-in/out tunes like Hades Nebula, where clicking ruins the intro.)
  output = (nonfilt+filtout) * (sReg[0x18]&0xF) / OUTPUT_SCALEDOWN;
- if (output>=32767) output=32767; else if (output<=-32768) output=-32768; //saturation logic on overload (not needed if the callback handles it)
+ //if (output>=32767) output=32767; else if (output<=-32768) output=-32768; //saturation logic on overload (not needed if the callback handles it)
  return (int)output; // master output
 }
 
@@ -581,9 +491,9 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
 //This simplified schematic exapmle might make it easier to understand sawtooth+pulse combination (must be observed with monospace fonts):
 //                               _____            |-    .--------------.   /\/\--.
 // Vsupply                /  .----| |---------*---|-    /    Vsupply   !    R    !      As can be seen on this schematic,
-//  ------.       other   !  !   _____        !  TRES   \       \      !         /      the pulse wave-selector FETs 
+//  ------.       other   !  !   _____        !  TRES   \       \      !         /      the pulse wave-selector FETs
 //        !       saw bit *--!----| |---------'  HOLD   /       !     |-     2R  \      connect the neighbouring sawtooth
-//        /       output  !  !                          !      |------|-         /      outputs with a fairly strong 
+//        /       output  !  !                          !      |------|-         /      outputs with a fairly strong
 //     Rd \              |-  !WAVEFORM-SELECTOR         *--*---|-      !    R    !      connection to each other through
 //        /              |-  !SWITCHING FETs            !  !    !      *---/\/\--*      their own wave-selector FETs.
 //        ! saw-bit          !    _____                |-  !   ---     !         !      So the adjacent sawtooth outputs
@@ -599,22 +509,41 @@ int SID(char num, unsigned int baseaddr) //the SID emulation itself ('num' is th
 //in case you don't like these calculated combined waveforms it's easy to substitute the generated tables by pre-sampled 'exact' versions
 
 unsigned int combinedWF(char num, char channel, unsigned int* wfarray, int index, char differ6581, byte freqh) {
- static float addf; addf = 0.6+0.4/freqh;
- if(differ6581 && SID_model[num]==6581) index&=0x7FF; 
+ static float addf;
+ if (freqh==0) freqh=1; //avoid division by zero
+ #ifdef NEW_COMBINED_WAVEFORMS
+  addf = 0.4+0.6/freqh;
+ #else
+  addf = 0.6+0.4/freqh;
+ #endif
+ if(differ6581 && SID_model[num]==6581) index&=0x7FF;
  prevwavdata[channel] = wfarray[index]*addf + prevwavdata[channel]*(1.0-addf);
  return prevwavdata[channel];
 }
 
+#ifdef NEW_COMBINED_WAVEFORMS
 void createCombinedWF(unsigned int* wfarray, float bitmul, float bitstrength, float treshold) {
  int  i,j,k;
- for (i=0; i<4096; i++) { wfarray[i]=0; 
+ for (i=0; i<4096; i++) { wfarray[i]=0;
   for (j=0; j<12;j++) {
-   float bitlevel=0; 
-   for (k=0; k<12; k++) bitlevel += ( bitmul/pow(bitstrength,fabs(k-j)) ) * (((i>>k)&1)-0.5);
-   wfarray[i] += (bitlevel>=treshold)? pow(2,j) : 0; } 
-  wfarray[i]*=12;  
+   float bitlevel=((i>>j)&1);
+   for (k=0; k<12; k++) if (!((i>>k)&1)) bitlevel -= bitmul / pow(bitstrength, fabs(k-j));
+   wfarray[i] += (bitlevel>=treshold)? pow(2,j) : 0; }
+  wfarray[i]*=12;
  }
 }
+#else
+void createCombinedWF(unsigned int* wfarray, float bitmul, float bitstrength, float treshold) {
+ int  i,j,k;
+ for (i=0; i<4096; i++) { wfarray[i]=0;
+  for (j=0; j<12;j++) {
+   float bitlevel=0;
+   for (k=0; k<12; k++) bitlevel += ( bitmul/pow(bitstrength,fabs(k-j)) ) * (((i>>k)&1)-0.5);
+   wfarray[i] += (bitlevel>=treshold)? pow(2,j) : 0; }
+  wfarray[i]*=12;
+ }
+}
+#endif
 
 
 //
@@ -693,10 +622,6 @@ int libcsid_load(unsigned char *_buffer, int _bufferlen, int _subtune) {
       strend = SIDinfo[i] = 0;
     }
   }
-
-  // printf("\nTitle: %s    ",SIDtitle);
-  // printf("Author: %s    ",SIDauthor);
-  // printf("Info: %s",SIDinfo);
 
   initaddr=filedata[0xA]+filedata[0xB]? filedata[0xA]*256+filedata[0xB] : loadaddr; playaddr=playaddf=filedata[0xC]*256+filedata[0xD]; printf("\nInit:$%4.4X,Play:$%4.4X, ",initaddr,playaddr);
   subtune_amount=filedata[0xF];
