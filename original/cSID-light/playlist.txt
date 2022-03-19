@@ -1,3 +1,4 @@
+music/MSK_cover-XF_End.sid 2:46
 music/Flash_It_Back.sid 4:29
 music/E_G_Blues_2SID.sid 5:30
 music/Conga_Beat.sid 4:10

@@ -95,7 +95,7 @@ int main (int argc, char *argv[])
   if (tunelength != -1) {
     sleep(tunelength);
   } else {
-    printf("Press Enter to abort playback...\n");
+    printf("\nPress Enter to abort playback...\n");
     getchar();
   }
 

@@ -1,9 +1,24 @@
-                             cSID-light by Hermit
-                             ====================
+                           cSID-light-1.1 by Hermit
+                           ========================
+
+ This version of cSIDl is a minor update, only illegal NOPs added to support
+some more exotic players like Blackbird and my latest one which uses NOP #imm.
+(Zeropage-wraparound is also emulated now for tricky addressing schemes.)
+ Beside that it also have the combined waveform-generator that is closer to the
+original SID's, but at the same time sounds a bit more aliased if unfiltered
+and had to be filtered (dynamically btw) in the SID-engine to still soud good.
+ Windows-exe for commandline is also made in this version with mingw-gcc, and
+many parentheses-corrections were made to the CPU-emulation code's shifts/etc.
+ And the saturation logic is now in the multi-SID output so some clickings that
+were present with 2SID tunes of big boosts like Gliding Gladly now disappeared,
+and at the same time I eliminated some possibilities of division by zero.
+
+The original first cSID-light version's release text coming:
+
 
  This version of cSID is more closely based on jsSID, using the same sampling
 frequency paced (non-cycleexact) approach to cause far lower CPU load...
-(Peaks at 15% on an EEEPC900 with Celeron CPU at 630Mhz power-saving mode 
+(Peaks at 15% on an EEEPC900 with Celeron CPU at 630Mhz power-saving mode
  playing single SID tune, 2SID and 3SID eat more of course. On the backside it
  means improper ADSR handling might happen in peculiar cases, and the combined
  waveforms don't sound as clean as in the 1MHz 'oversampling' 'csid' version.)
@@ -12,7 +27,7 @@ cSID is a cross-platform commandline SID-player based on the code of my other
 project called jsSID. Some people asked at CSDB if I could make a C/C++ port
 to run on native machine, and DefleMask guys started to port jsSID to C++, and
 got involved by helping them, actually finishing the work as I know this
-engine the best as the original author. This was last year, and beside other 
+engine the best as the original author. This was last year, and beside other
 projects, I ported the CPU emulation and player engine as well to C. Some guys
 also asked for a shared library (.dll/.so) that they can use in their non-GPL
 licensed or closed-source programs. I haven't made a shared library yet but
@@ -30,7 +45,7 @@ You can type - in the place of SID model if you don't want to explicitly set
 it but want to tell the playtime to cSID. Otherwise, type 8580 or 6581, and
 it will have precedence over the SID-models originally asked by the .sid file.
 If you want to play the tune infinitely, don't give playtime and it will play
-till you press Enter. 
+till you press Enter.
  As you can give the playtime in seconds, you can play more SID files from a
 simple bash/batch script after each other, or you can use cSID as a backend for
 a GUI program you develop... (This is the gnu/unix idea of apps I guess...)
@@ -39,7 +54,7 @@ a GUI program you develop... (This is the gnu/unix idea of apps I guess...)
 
 Some 'extra' features in cSID-light:
 -2SID and 3SID tunes are playable (in monaural mode)
--Illegal opcodes are now fully supported (except nonsense NOP variants and JAM)
+-Illegal opcodes are now fully supported (including some NOP variants now)
 -closer 6581 filter emulation with distortion and comments on workings of filter
 -playlist file support (subtune and playtime can be given for each tune)
  (Playlist is any file with other than .sid extension, the format of titles in
@@ -57,4 +72,4 @@ a fairly good sounding but really small (30kbyte) standalone player, which can
 run without dependencies (except SDL_audio). Who knows, it might be your only
 option sometimes, when you don't have GUI and bloatware on your system.
 
-      2017 Hermit Software (Mihaly Horvath) - http://hermit.sidrip.com
+                  2022 Hermit Software (Mihaly Horvath)
